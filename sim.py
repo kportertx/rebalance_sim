@@ -10,18 +10,19 @@ from itertools import combinations
 # seeds 2185, 8448, 3274 are particularly bad for 5 node rf 2.
 
 N_PARTITIONS = 4096
-N_NODES = 96
+N_NODES = 18
+N_RACKS = 3
 REPLICATION_FACTOR = 3
-N_RUNS = 100
+N_RUNS = 500
 
 NODE_NAMES = [chr(65 + i) for i in range(26)]
 NODE_NAMES = [name for sublist in [[n + str(s) for n in NODE_NAMES]
                                    for s in range(10)] for name in sublist]
-SEED = 7973  # random.SystemRandom().randint(1000, 9999)
+SEED = 7973  # random.SystemRandom().randint(1000, 9999)  # 7973
 
 OUTPUT = True
 DISABLE_MAX_OUTAGE = True
-DO_DROP = True
+DO_DROP = False
 N_PROCS = 4
 N_CHUNKS_PER_PROC = 8
 
@@ -81,8 +82,13 @@ def make_map(nodes):
     return partition_map
 
 
-def describe_map(nodes, pmap):
-    replica_map = [r[:REPLICATION_FACTOR] for r in pmap]
+def describe_map(nodes, racks, pmap):
+    n_racks = len(set(racks.values()))
+
+    if n_racks > 1:
+        return describe_rack_aware_map(nodes, racks, pmap)
+
+    replica_map = (r[:REPLICATION_FACTOR] for r in pmap)
     replicas_counts = [Counter() for _ in range(REPLICATION_FACTOR)]
     expected = (N_PARTITIONS + len(nodes) - 1) / len(nodes)
 
@@ -110,7 +116,7 @@ def describe_map(nodes, pmap):
         if outage > max_outage:
             max_outage = outage
 
-    stats = (sorted(counts.values()) for counts in replicas_counts)
+    stats = [sorted(counts.values()) for counts in replicas_counts]
     stats = [(values[0], values[-1], values[-1] - expected,
               sum(1 for v in values if v > expected))
              for values in stats]
@@ -127,7 +133,6 @@ def describe_map(nodes, pmap):
     node_excess = [sv if sv > 0 else 0 for sv
                    in sorted(v - max_per_node
                              for v in nodes_counts.values())]
-    # print extra_per_node, expected_per_node, sorted(nodes_counts.values()), node_excess
 
     # Compute column excess.
     column_max_excess = 0
@@ -146,6 +151,108 @@ def describe_map(nodes, pmap):
             node_excess[-1])
 
     return column_max_excess, node_excess[-1]
+
+
+def describe_rack_aware_map(nodes, racks, pmap):
+    replica_map = (r[:REPLICATION_FACTOR] for r in pmap)
+    replicas_counts = [Counter() for _ in range(REPLICATION_FACTOR)]
+    node_counts = Counter()
+
+    for replicas in replica_map:
+        for r, node in enumerate(replicas):
+            replicas_counts[r][node] += 1
+            node_counts[node] += 1
+
+    n_racks = len(set(racks.values()))
+    n_rows_violating = 0
+    n_replica_racks = min([n_racks, REPLICATION_FACTOR, len(nodes)])
+    is_rack_aware = True
+
+    for row in pmap:
+        replica_racks = set()
+
+        for r in range(n_replica_racks):
+            replica_racks.add(racks[row[r]])
+
+        if len(replica_racks) != n_replica_racks:
+            is_rack_aware = False
+            n_rows_violating += 1
+
+    with log("Rack aware: n_replica_racks {} rack_aware {} n_rows_violating {}",
+             n_replica_racks, is_rack_aware, n_rows_violating):
+        if not is_rack_aware:
+            log("WARNING - DID NOT SATISFY RACK AWARE")
+            return 0, 0
+
+        rack_ids = sorted(set(racks.values()))
+        rack_replica_counts = [Counter() for r in range(REPLICATION_FACTOR)]
+        rack_counts = Counter()
+        rack_n_nodes = Counter()
+
+        for n in nodes:
+            rack_n_nodes[racks[n]] += 1
+
+        for row in pmap:
+            for r in range(REPLICATION_FACTOR):
+                node = row[r]
+                rack = racks[node]
+
+                rack_replica_counts[r][rack] += 1
+                rack_counts[rack] += 1
+
+        rack_nodes = {rack_id: [] for rack_id in rack_ids}
+
+        for node, rack_id in racks.items():
+            if node in nodes:
+                rack_nodes[rack_id].append(node)
+
+        for value in rack_nodes.values():
+            value.sort()
+
+        min_rack_size = min(len(l) for l in rack_nodes.values())
+        column_spreads = []
+        node_spreads = []
+
+        for rack_id in rack_ids:
+            is_min_rack = len(rack_nodes[rack_id]) == min_rack_size
+            node_spread_values = Counter()
+
+            with log("Rack {}: n_nodes {} count {}",
+                     rack_id, rack_n_nodes[rack_id],
+                     rack_counts[rack_id]):
+                for r in range(REPLICATION_FACTOR):
+                    n_counts = []
+
+                    for n in rack_nodes[rack_id]:
+                        n_counts.append(replicas_counts[r][n])
+
+                    if is_min_rack:
+                        column_spreads.append(n_counts[-1] - n_counts[0])
+
+                        for n in rack_nodes[rack_id]:
+                            node_spread_values[n] += replicas_counts[r][n]
+
+                    if len(n_counts) >= 3:
+                        log("Column {}: total {} minimum {} median {} maximum {}",
+                            r, rack_replica_counts[r][rack_id], n_counts[0],
+                            n_counts[len(n_counts) / 2], n_counts[-1])
+                    elif len(n_counts) == 2:
+                        log("Column {}: total {} minimum {} maximum {}",
+                            r, rack_replica_counts[r][rack_id], n_counts[0],
+                            n_counts[-1])
+                    else:
+                        log("Column {}: total {}",
+                            r, rack_replica_counts[r][rack_id])
+
+                if is_min_rack:
+                    node_spread_values = sorted(node_spread_values.values())
+                    node_spreads.append(
+                        node_spread_values[-1] - node_spread_values[0])
+
+    column_spread = sorted(column_spreads)[-1]
+    node_spread = sorted(node_spreads)[-1]
+
+    return column_spread, node_spread
 
 
 def compare_maps(pmap1, pmap2):
@@ -169,31 +276,94 @@ def compare_maps(pmap1, pmap2):
 
 def simulate(balance_fn, do_drop=DO_DROP):
     random.seed(SEED)
-    init_nodes = random.sample(NODE_NAMES, N_NODES)
+    init_nodes = sorted(random.sample(NODE_NAMES, N_NODES))
+
+    min_rack_size = N_NODES / N_RACKS
+
+    init_racks = {}
+    rack_id = 1
+    n_racked = 0
+
+    for node in init_nodes:
+        if n_racked < min_rack_size:
+            n_racked += 1
+        elif rack_id < N_RACKS:
+            rack_id += 1
+            n_racked = 1
+
+        init_racks[node] = rack_id
 
     with log('Start'):
-        initial_map = balance_fn(init_nodes, make_map(init_nodes))
+        init_map = balance_fn(init_nodes, init_racks, make_map(init_nodes))
 
         column_max_excess, node_max_excess = describe_map(
-            init_nodes, initial_map)
+            init_nodes, init_racks, init_map)
 
     if do_drop:
         with log('Removed a node'):
             remove_node = init_nodes[:]
             remove_node.pop()
-            remove_node_map = balance_fn(remove_node, make_map(remove_node))
+            remove_node_map = balance_fn(
+                remove_node, init_racks, make_map(remove_node))
 
-            describe_map(remove_node, remove_node_map)
-            compare_maps(initial_map, remove_node_map)
+            describe_map(remove_node, init_racks, remove_node_map)
+            compare_maps(init_map, remove_node_map)
 
     return column_max_excess, node_max_excess
 
 
-def standard_balance(nodes, pmap):
+def then_rack_aware(balance_fn):
+    def is_unique_before_r(racks, row, r, rack_id):
+        for prior_r in range(r):
+            prior_n = row[prior_r]
+
+            if racks[prior_n] == rack_id:
+                return False
+
+        return True
+
+    def do_rack_aware(nodes, racks, pmap, **kwargs):
+        pmap = balance_fn(nodes, racks, pmap, **kwargs)
+
+        n_needed = min(
+            [len(set(racks.values())), len(nodes), REPLICATION_FACTOR])
+
+        for row in pmap:
+            next_r = n_needed
+
+            for cur_r in range(1, n_needed):
+                if is_unique_before_r(racks, row, cur_r, racks[row[cur_r]]):
+                    continue
+
+                swap_r = cur_r
+
+                for next_r in range(next_r, len(nodes)):
+                    next_n = row[next_r]
+
+                    if is_unique_before_r(racks, row, cur_r, racks[next_n]):
+                        swap_r = next_r
+                        next_r += 1
+                        break
+                else:
+                    continue
+
+                if cur_r != swap_r:
+                    swap_n = row[swap_r]
+                    row[swap_r] = row[cur_r]
+                    row[cur_r] = swap_n
+
+        return pmap
+
+    do_rack_aware.__name__ = balance_fn.__name__ + "_then_rack_aware"
+
+    return do_rack_aware
+
+
+def standard_balance(nodes, racks, pmap):
     return pmap
 
 
-def ashish_balance(nodes, pmap):
+def ashish_balance(nodes, racks, pmap):
     node_loads = [Counter() for _ in range(len(nodes))]
     max_load_per_col = ((N_PARTITIONS + len(nodes) - 1) / len(nodes))
 
@@ -233,7 +403,7 @@ def ashish_balance(nodes, pmap):
     return pmap
 
 
-def naive_balance(nodes, pmap, lowered=0):
+def naive_balance(nodes, racks, pmap, lowered=0):
     replica_counts = [Counter() for _ in range(REPLICATION_FACTOR)]
     target_ptns = (N_PARTITIONS - lowered) / len(nodes)
 
@@ -257,7 +427,7 @@ def naive_balance(nodes, pmap, lowered=0):
     return pmap
 
 
-def naive_balance_with_backtrack(nodes, pmap, lowered=0):
+def naive_balance_with_backtrack(nodes, racks, pmap, lowered=0):
     replica_counts = [Counter() for _ in range(REPLICATION_FACTOR)]
     target_ptns = (N_PARTITIONS + (len(nodes) - 1)) / len(nodes)
 
@@ -379,7 +549,7 @@ def naive_balance_with_backtrack(nodes, pmap, lowered=0):
     return pmap
 
 
-def two_pass_balance_v1(nodes, pmap):
+def two_pass_balance_v1(nodes, racks, pmap):
     replica_counts = [Counter() for _ in range(REPLICATION_FACTOR)]
 
     for row in pmap:
@@ -456,7 +626,7 @@ def two_pass_balance_v1(nodes, pmap):
     return pmap
 
 
-def two_pass_balance_v2(nodes, pmap):
+def two_pass_balance_v2(nodes, racks, pmap):
     replica_counts = [Counter() for _ in range(REPLICATION_FACTOR)]
 
     for row in pmap:
@@ -549,7 +719,7 @@ def two_pass_balance_v2(nodes, pmap):
     return pmap
 
 
-def naive_balance_enhanced_v1(nodes, pmap, lowered=0):
+def naive_balance_enhanced_v1(nodes, racks, pmap, lowered=0):
     replicas_claims = [Counter() for _ in range(REPLICATION_FACTOR)]
     smooth_balance_mark = (N_PARTITIONS - lowered) / len(nodes)
 
@@ -614,7 +784,7 @@ def naive_balance_enhanced_v1(nodes, pmap, lowered=0):
     return pmap
 
 
-def naive_balance_enhanced_v2(nodes, pmap, lowered=0):
+def naive_balance_enhanced_v2(nodes, racks, pmap, lowered=0):
     replicas_claims = [Counter() for _ in range(REPLICATION_FACTOR)]
     smooth_balance_mark = (N_PARTITIONS - lowered) / len(nodes)
 
@@ -679,39 +849,649 @@ def naive_balance_enhanced_v2(nodes, pmap, lowered=0):
     return pmap
 
 
+def rack_unique_before_r(racks, row, r, cur_rack):
+    for prior_r in range(r):
+        prior_rack = racks[row[prior_r]]
+
+        if cur_rack == prior_rack:
+            return False
+
+    return True
+
+
+def rack_balance(nodes, racks, pmap, lowered=0):
+    replicas_claims = [Counter() for _ in range(REPLICATION_FACTOR)]
+    smooth_balance_mark = (N_PARTITIONS - lowered) / len(nodes)
+
+    min_claims = N_PARTITIONS / len(nodes)
+    replicas_target_claims = [{n: min_claims for n in nodes}
+                              for _ in range(REPLICATION_FACTOR)]
+
+    remainder = N_PARTITIONS % len(nodes)
+    n_racks = len(set(racks.values()))
+
+    if remainder != 0:
+        target_n = 0
+        replica = 0
+        n_added = 0
+        sl_ix = sorted(replicas_target_claims[0].keys())
+
+        while replica < REPLICATION_FACTOR:
+            if n_added < remainder:
+                replicas_target_claims[replica][sl_ix[target_n]] += 1
+
+                n_added += 1
+                target_n += 1
+
+                if target_n == len(nodes):
+                    target_n = 0
+
+                if n_added == remainder:
+                    n_added = 0
+                    replica += 1
+
+    for pid, row in enumerate(pmap):
+        for r in range(REPLICATION_FACTOR):
+            replica_claims = replicas_claims[r]
+            replica_target_claims = replicas_target_claims[r]
+            r_claims = replica_claims[row[r]]
+
+            swap_r = r
+            swap_target_claims = replica_target_claims[row[swap_r]]
+            swap_score = swap_target_claims - r_claims
+            swap_is_rack_safe = swap_r == 0 or swap_r >= n_racks or \
+                rack_unique_before_r(racks, row, swap_r, racks[row[r]])
+
+            if not swap_is_rack_safe or r_claims >= smooth_balance_mark:
+                for next_r in range(r + 1, len(nodes)):
+                    if r < n_racks:
+                        if not rack_unique_before_r(
+                                racks, row, r, racks[row[next_r]]):
+                            continue  # not rack-safe
+                    # else - next_r is rack-safe.
+
+                    next_target_claims = replica_target_claims[row[next_r]]
+                    next_claims = replica_claims[row[next_r]]
+                    next_score = next_target_claims - next_claims
+
+                    if not swap_is_rack_safe:
+                        swap_r = next_r
+                        swap_target_claims = next_target_claims
+                        swap_score = next_score
+                        swap_is_rack_safe = True
+
+                        if r_claims < smooth_balance_mark:
+                            break
+
+                        continue
+
+                    if next_score > swap_score:
+                        swap_r = next_r
+                        swap_target_claims = next_target_claims
+                        swap_score = next_score
+                    elif next_score == swap_score:
+                        if swap_target_claims > next_target_claims:
+                            # This seems to help... not sure why.
+                            swap_r = next_r
+                            swap_target_claims = next_target_claims
+                            swap_score = next_score
+
+                if swap_r != r:
+                    n = row[swap_r]
+                    row[swap_r] = row[r]
+                    row[r] = n
+
+            replica_claims[row[r]] += 1
+
+    return pmap
+
+
+def simple_rack_balance(nodes, racks, pmap, lowered=0):
+    replicas_claims = [Counter() for _ in range(REPLICATION_FACTOR)]
+    smooth_balance_mark = (N_PARTITIONS - lowered) / len(nodes)
+
+    min_claims = N_PARTITIONS / len(nodes)
+    replicas_target_claims = [{n: min_claims for n in nodes}
+                              for _ in range(REPLICATION_FACTOR)]
+
+    remainder = N_PARTITIONS % len(nodes)
+    n_racks = len(set(racks.values()))
+
+    if remainder != 0:
+        target_n = 0
+        replica = 0
+        n_added = 0
+        sl_ix = sorted(replicas_target_claims[0].keys())
+
+        while replica < REPLICATION_FACTOR:
+            if n_added < remainder:
+                replicas_target_claims[replica][sl_ix[target_n]] += 1
+
+                n_added += 1
+                target_n += 1
+
+                if target_n == len(nodes):
+                    target_n = 0
+
+                if n_added == remainder:
+                    n_added = 0
+                    replica += 1
+
+    for pid, row in enumerate(pmap):
+        for r in range(REPLICATION_FACTOR):
+            replica_claims = replicas_claims[r]
+            replica_target_claims = replicas_target_claims[r]
+            r_claims = replica_claims[row[r]]
+
+            swap_r = r
+            swap_target_claims = replica_target_claims[row[swap_r]]
+            swap_score = swap_target_claims - r_claims
+            swap_is_rack_safe = swap_r == 0 or swap_r >= n_racks or \
+                rack_unique_before_r(racks, row, swap_r, racks[row[r]])
+
+            if not swap_is_rack_safe or r_claims >= smooth_balance_mark:
+                for next_r in range(r + 1, len(nodes)):
+                    if r < n_racks:
+                        if not rack_unique_before_r(
+                                racks, row, r, racks[row[next_r]]):
+                            continue  # not rack-safe
+                    # else - next_r is rack-safe.
+
+                    next_target_claims = replica_target_claims[row[next_r]]
+                    next_claims = replica_claims[row[next_r]]
+                    next_score = next_target_claims - next_claims
+
+                    if not swap_is_rack_safe:
+                        swap_r = next_r
+                        swap_target_claims = next_target_claims
+                        swap_score = next_score
+                        swap_is_rack_safe = True
+
+                        if r_claims < smooth_balance_mark:
+                            break
+
+                        continue
+
+                    if next_score > swap_score:
+                        swap_r = next_r
+                        swap_target_claims = next_target_claims
+                        swap_score = next_score
+
+                if swap_r != r:
+                    n = row[swap_r]
+                    row[swap_r] = row[r]
+                    row[r] = n
+
+            replica_claims[row[r]] += 1
+
+    return pmap
+
+
+def rack_balance_order(nodes, racks, pmap, lowered=0):
+    replicas_claims = [Counter() for _ in range(REPLICATION_FACTOR)]
+    smooth_balance_mark = (N_PARTITIONS - lowered) / len(nodes)
+
+    min_claims = N_PARTITIONS / len(nodes)
+    replicas_target_claims = [{n: min_claims for n in nodes}
+                              for _ in range(REPLICATION_FACTOR)]
+
+    remainder = N_PARTITIONS % len(nodes)
+    n_racks = len(set(racks.values()))
+
+    if remainder != 0:
+        target_n = 0
+        replica = 0
+        n_added = 0
+        sl_ix = sorted(replicas_target_claims[0].keys())
+
+        while replica < REPLICATION_FACTOR:
+            if n_added < remainder:
+                replicas_target_claims[replica][sl_ix[target_n]] += 1
+
+                n_added += 1
+                target_n += 1
+
+                if target_n == len(nodes):
+                    target_n = 0
+
+                if n_added == remainder:
+                    n_added = 0
+                    replica += 1
+
+    def rack_unique_in_evaled(racks, row, evaluated_replicas, cur_rack):
+        for prior_r in evaluated_replicas:
+            prior_rack = racks[row[prior_r]]
+
+            if cur_rack == prior_rack:
+                return False
+
+        return True
+
+    for pid, row in enumerate(pmap):
+        evaluated_replicas = []
+
+        for _ in range(REPLICATION_FACTOR):
+            min_replica = None
+            min_claims = None
+
+            for r in range(REPLICATION_FACTOR):
+                if r in evaluated_replicas:
+                    continue
+
+                r_claims = replicas_claims[r][row[r]]
+
+                if min_replica is None or r_claims < min_claims:
+                    min_replica = r
+                    min_claims = r_claims
+
+            r = min_replica
+
+            replica_claims = replicas_claims[r]
+            replica_target_claims = replicas_target_claims[r]
+
+            r_claims = replica_claims[row[r]]
+
+            swap_r = r
+            swap_target_claims = replica_target_claims[row[swap_r]]
+            swap_score = swap_target_claims - r_claims
+            swap_is_rack_safe = len(evaluated_replicas) == 0 or len(evaluated_replicas) >= n_racks or \
+                rack_unique_in_evaled(racks, row, evaluated_replicas, racks[row[r]])
+
+            if not swap_is_rack_safe or r_claims >= smooth_balance_mark:
+                for next_r in range(0, len(nodes)):
+                    if next_r in evaluated_replicas:
+                        continue
+
+                    if len(evaluated_replicas) < n_racks:
+                        if not rack_unique_in_evaled(
+                                racks, row, evaluated_replicas, racks[row[next_r]]):
+                            continue  # not rack-safe
+                    # else - next_r is rack-safe.
+
+                    next_target_claims = replica_target_claims[row[next_r]]
+                    next_claims = replica_claims[row[next_r]]
+                    next_score = next_target_claims - next_claims
+
+                    if not swap_is_rack_safe:
+                        swap_r = next_r
+                        swap_target_claims = next_target_claims
+                        swap_score = next_score
+                        swap_is_rack_safe = True
+
+                        if r_claims < smooth_balance_mark:
+                            break
+
+                        continue
+
+                    if next_score > swap_score:
+                        swap_r = next_r
+                        swap_target_claims = next_target_claims
+                        swap_score = next_score
+                    elif next_score == swap_score:
+                        if swap_target_claims > next_target_claims:
+                            # This seems to help... not sure why.
+                            swap_r = next_r
+                            swap_target_claims = next_target_claims
+                            swap_score = next_score
+
+                if swap_r != r:
+                    n = row[swap_r]
+                    row[swap_r] = row[r]
+                    row[r] = n
+
+            replica_claims[row[r]] += 1
+            evaluated_replicas.append(r)
+
+    return pmap
+
+
+def rack_balance_orderish(nodes, racks, pmap, lowered=0):
+    replicas_claims = [Counter() for _ in range(REPLICATION_FACTOR)]
+    smooth_balance_mark = (N_PARTITIONS - lowered) / len(nodes)
+
+    min_claims = N_PARTITIONS / len(nodes)
+    replicas_target_claims = [{n: min_claims for n in nodes}
+                              for _ in range(REPLICATION_FACTOR)]
+
+    remainder = N_PARTITIONS % len(nodes)
+    n_racks = len(set(racks.values()))
+
+    if remainder != 0:
+        target_n = 0
+        replica = 0
+        n_added = 0
+        sl_ix = sorted(replicas_target_claims[0].keys())
+
+        while replica < REPLICATION_FACTOR:
+            if n_added < remainder:
+                replicas_target_claims[replica][sl_ix[target_n]] += 1
+
+                n_added += 1
+                target_n += 1
+
+                if target_n == len(nodes):
+                    target_n = 0
+
+                if n_added == remainder:
+                    n_added = 0
+                    replica += 1
+
+    def rack_unique_in_evaled(racks, row, evaluated_replicas, cur_rack):
+        for prior_r in evaluated_replicas:
+            prior_rack = racks[row[prior_r]]
+
+            if cur_rack == prior_rack:
+                return False
+
+        return True
+
+    for pid, row in enumerate(pmap):
+        evaluated_replicas = []
+
+        for z in range(REPLICATION_FACTOR):
+            min_replica = None
+            min_score = None
+
+            for r in range(REPLICATION_FACTOR):
+                if r in evaluated_replicas:
+                    continue
+
+                r_claims = replicas_claims[z][row[r]]
+                r_target_claims = replicas_target_claims[z][row[r]]
+                r_score = r_target_claims - r_claims
+
+                if min_replica is None or r_score < min_score:
+                    min_replica = r
+                    min_score = r_claims
+
+            min_replica = z
+
+            n = row[z]
+            row[z] = row[min_replica]
+            row[min_replica] = row[z]
+            r = z
+
+            replica_claims = replicas_claims[r]
+            replica_target_claims = replicas_target_claims[r]
+
+            r_claims = replica_claims[row[r]]
+
+            swap_r = r
+            swap_target_claims = replica_target_claims[row[swap_r]]
+            swap_score = swap_target_claims - r_claims
+            swap_is_rack_safe = len(evaluated_replicas) == 0 or len(evaluated_replicas) >= n_racks or \
+                rack_unique_in_evaled(racks, row, evaluated_replicas, racks[row[r]])
+
+            if not swap_is_rack_safe or r_claims >= smooth_balance_mark:
+                for next_r in range(r + 1, len(nodes)):
+                    if next_r in evaluated_replicas:
+                        continue
+
+                    if len(evaluated_replicas) < n_racks:
+                        if not rack_unique_in_evaled(
+                                racks, row, evaluated_replicas, racks[row[next_r]]):
+                            continue  # not rack-safe
+                    # else - next_r is rack-safe.
+
+                    next_target_claims = replica_target_claims[row[next_r]]
+                    next_claims = replica_claims[row[next_r]]
+                    next_score = next_target_claims - next_claims
+
+                    if not swap_is_rack_safe:
+                        swap_r = next_r
+                        swap_target_claims = next_target_claims
+                        swap_score = next_score
+                        swap_is_rack_safe = True
+
+                        if r_claims < smooth_balance_mark:
+                            break
+
+                        continue
+
+                    if next_score > swap_score:
+                        swap_r = next_r
+                        swap_target_claims = next_target_claims
+                        swap_score = next_score
+                    elif next_score == swap_score:
+                        if swap_target_claims > next_target_claims:
+                            # This seems to help... not sure why.
+                            swap_r = next_r
+                            swap_target_claims = next_target_claims
+                            swap_score = next_score
+
+                if swap_r != r:
+                    n = row[swap_r]
+                    row[swap_r] = row[r]
+                    row[r] = n
+
+            replica_claims[row[r]] += 1
+            evaluated_replicas.append(r)
+
+    return pmap
+
+
+def rack_balance_andys_tie(nodes, racks, pmap, lowered=0):
+    replicas_claims = [Counter() for _ in range(REPLICATION_FACTOR)]
+    smooth_balance_mark = (N_PARTITIONS - lowered) / len(nodes)
+
+    min_claims = N_PARTITIONS / len(nodes)
+    replicas_target_claims = [{n: min_claims for n in nodes}
+                              for _ in range(REPLICATION_FACTOR)]
+
+    remainder = N_PARTITIONS % len(nodes)
+    n_racks = len(set(racks.values()))
+    n_ties = 0
+
+    if remainder != 0:
+        target_n = 0
+        replica = 0
+        n_added = 0
+        sl_ix = sorted(replicas_target_claims[0].keys())
+
+        while replica < REPLICATION_FACTOR:
+            if n_added < remainder:
+                replicas_target_claims[replica][sl_ix[target_n]] += 1
+
+                n_added += 1
+                target_n += 1
+
+                if target_n == len(nodes):
+                    target_n = 0
+
+                if n_added == remainder:
+                    n_added = 0
+                    replica += 1
+
+    for pid, row in enumerate(pmap):
+        for r in range(REPLICATION_FACTOR):
+            replica_claims = replicas_claims[r]
+            replica_target_claims = replicas_target_claims[r]
+            r_claims = replica_claims[row[r]]
+
+            swap_r = r
+            swap_target_claims = replica_target_claims[row[swap_r]]
+            swap_score = swap_target_claims - r_claims
+            swap_is_rack_safe = swap_r == 0 or swap_r >= n_racks or \
+                rack_unique_before_r(racks, row, swap_r, racks[row[r]])
+            tie = False
+
+            if not swap_is_rack_safe or r_claims >= smooth_balance_mark:
+                for next_r in range(r + 1, len(nodes)):
+                    if r < n_racks:
+                        if not rack_unique_before_r(
+                                racks, row, r, racks[row[next_r]]):
+                            continue  # not rack-safe
+                    # else - next_r is rack-safe.
+
+                    next_target_claims = replica_target_claims[row[next_r]]
+                    next_claims = replica_claims[row[next_r]]
+                    next_score = next_target_claims - next_claims
+
+                    if not swap_is_rack_safe:
+                        swap_r = next_r
+                        swap_target_claims = next_target_claims
+                        swap_score = next_score
+                        swap_is_rack_safe = True
+
+                        if r_claims < smooth_balance_mark:
+                            break
+
+                        continue
+
+                    if next_score > swap_score:
+                        swap_r = next_r
+                        swap_target_claims = next_target_claims
+                        swap_score = next_score
+                        tie = False
+                    elif next_score == swap_score:
+                        if r != REPLICATION_FACTOR - 1:
+                            tie_swap_target_claims = replicas_target_claims[r + 1][row[swap_r]]
+                            tie_swap_claims = replicas_claims[r + 1][row[swap_r]]
+                            tie_swap_score = tie_swap_target_claims - tie_swap_claims
+
+                            tie_next_target_claims = replicas_target_claims[r + 1][row[next_r]]
+                            tie_next_claims = replicas_claims[r + 1][row[next_r]]
+                            tie_next_score = tie_next_target_claims - tie_next_claims
+
+                            if tie_next_score < tie_swap_score:
+                                tie = True
+                                swap_r = next_r
+                                swap_target_claims = next_target_claims
+                                swap_score = next_score
+                            elif tie_next_score == tie_swap_score:
+                                if swap_target_claims > next_target_claims:
+                                    # This seems to help... not sure why.
+                                    swap_r = next_r
+                                    swap_target_claims = next_target_claims
+                                    swap_score = next_score
+                        elif swap_target_claims > next_target_claims:
+                            # This seems to help... not sure why.
+                            swap_r = next_r
+                            swap_target_claims = next_target_claims
+                            swap_score = next_score
+
+                if swap_r != r:
+                    n = row[swap_r]
+                    row[swap_r] = row[r]
+                    row[r] = n
+
+                if tie:
+                    n_ties += 1
+
+            replica_claims[row[r]] += 1
+
+    return pmap
+
+
+def naive_rack_balance(nodes, racks, pmap, lowered=0):
+    replicas_claims = [Counter() for _ in range(REPLICATION_FACTOR)]
+    smooth_balance_mark = (N_PARTITIONS - lowered) / len(nodes)
+    n_racks = len(set(racks.values()))
+
+    for pid, row in enumerate(pmap):
+        for r in range(REPLICATION_FACTOR):
+            replica_claims = replicas_claims[r]
+
+            r_claims = replica_claims[row[r]]
+
+            swap_r = r
+            swap_claims = r_claims
+            swap_is_rack_safe = swap_r == 0 or swap_r >= n_racks or \
+                rack_unique_before_r(racks, row, swap_r, racks[row[r]])
+
+            if swap_claims >= smooth_balance_mark or not swap_is_rack_safe:
+                for next_r in range(r + 1, len(nodes)):
+                    if r < n_racks:
+                        if not rack_unique_before_r(
+                                racks, row, r, racks[row[next_r]]):
+                            continue  # not rack-safe
+                    # else - next_r is rack-safe.
+
+                    if not swap_is_rack_safe:
+                        swap_r = next_r
+                        swap_is_rack_safe = True
+
+                        if r_claims < smooth_balance_mark:
+                            break
+
+                        continue
+
+                    if replica_claims[row[next_r]] < swap_claims:
+                        swap_r = next_r
+                        swap_claims = replica_claims[row[swap_r]]
+
+                if swap_r != r:
+                    n = row[swap_r]
+                    row[swap_r] = row[r]
+                    row[r] = n
+
+            replica_claims[row[r]] += 1
+
+    return pmap
+
+
 def main():
     global OUTPUT, SEED
 
     naive_balance_lowered = []
 
-    for i in [128]:  # , 256]:  # , 512, 1024]:
-        fn_name = "with_lowered_{}".format(i)
-        naive_balance_lowered.append(sim_partial(
-            naive_balance, lowered=i, fn_name=fn_name))
+    for i in [128, 512, 1024]:  # , 256, 512, 1024, 2048]:
+        # fn_name = "with_lowered_{}".format(i)
+        # naive_balance_lowered.append(sim_partial(
+        #     naive_balance, lowered=i, fn_name=fn_name))
+
+        # fn_name = "with_lowered_{}".format(i)
+        # naive_balance_lowered.append(sim_partial(
+        #     naive_balance_enhanced_v1, lowered=i, fn_name=fn_name))
+
+        # fn_name = "with_lowered_{}".format(i)
+        # naive_balance_lowered.append(then_rack_aware(sim_partial(
+        #     naive_balance_enhanced_v2, lowered=i, fn_name=fn_name)))
 
         fn_name = "with_lowered_{}".format(i)
         naive_balance_lowered.append(sim_partial(
-            naive_balance_enhanced_v1, lowered=i, fn_name=fn_name))
+            rack_balance, lowered=i, fn_name=fn_name))
 
-        fn_name = "with_lowered_{}".format(i)
-        naive_balance_lowered.append(sim_partial(
-            naive_balance_enhanced_v2, lowered=i, fn_name=fn_name))
+        # fn_name = "with_lowered_{}".format(i)
+        # naive_balance_lowered.append(sim_partial(
+        #     simple_rack_balance, lowered=i, fn_name=fn_name))
+
+        # fn_name = "with_lowered_{}".format(i)
+        # naive_balance_lowered.append(sim_partial(
+        #     rack_balance_order, lowered=i, fn_name=fn_name))
+
+        # fn_name = "with_lowered_{}".format(i)  # FAIL
+        # naive_balance_lowered.append(sim_partial(
+        #     rack_balance_orderish, lowered=i, fn_name=fn_name))
+
+        # fn_name = "with_lowered_{}".format(i)
+        # naive_balance_lowered.append(sim_partial(
+        #     naive_rack_balance, lowered=i, fn_name=fn_name))
+
+        # fn_name = "with_lowered_{}".format(i)
+        # naive_balance_lowered.append(sim_partial(
+        #     rack_balance_andys_tie, lowered=i, fn_name=fn_name))
 
     balance_fns = [
-        standard_balance,
+        # standard_balance,
+        then_rack_aware(standard_balance),
         # naive_balance_with_backtrack,
         # two_pass_balance_v1,
-        two_pass_balance_v2,
+        # two_pass_balance_v2,
         # ashish_balance,
     ]
 
     balance_fns.extend(naive_balance_lowered)
 
     for balance_fn in balance_fns:
-        with log("Simulating '{}' - seed {} N_NODES {} RF {}",
-                 balance_fn.__name__, SEED, N_NODES, REPLICATION_FACTOR):
+        with log("Simulating '{}' - seed {} N_NODES {} RF {} N_RACK {}",
+                 balance_fn.__name__, SEED, N_NODES, REPLICATION_FACTOR,
+                 N_RACKS):
             simulate(balance_fn)
             log("")
+
+    if N_RUNS == 0:
+        exit()
 
     def do_run(seed):
         global SEED
@@ -724,8 +1504,8 @@ def main():
 
         return r
 
-    with log("Comparing: seed {} N_RUNS {} N_NODES {} RF {}",
-             SEED, N_RUNS, N_NODES, REPLICATION_FACTOR):
+    with log("Comparing: seed {} N_RUNS {} N_NODES {} RF {} N_RACKS {}",
+             SEED, N_RUNS, N_NODES, REPLICATION_FACTOR, N_RACKS):
         OUTPUT = False
         run_results = []
 
@@ -749,17 +1529,19 @@ def main():
             column_peaks = sorted(column_peaks)
             column_median = column_peaks[len(column_peaks) / 2]
             column_maximum = column_peaks[-1]
+            column_runs_gt_1 = (sum(1 for p in column_peaks if p > 1) / float(len(column_peaks))) * 100
 
             node_peaks = sorted(node_peaks)
             node_median = node_peaks[len(node_peaks) / 2]
             node_maximum = node_peaks[-1]
             runs_excess = sum(1 for p in node_peaks if p > 0)
+            node_runs_gt_1 = (sum(1 for p in node_peaks if p > 1) / float(len(node_peaks))) * 100
 
             with log("{} excesses", name):
-                log("Columns: median {} maximum {}", column_median,
-                    column_maximum)
-                log("Nodes: median {} maximum {} n_runs_exceeding {}",
-                    node_median, node_maximum, runs_excess)
+                log("Columns: median {} maximum {} runs_gt_1 {}",
+                    column_median, column_maximum, column_runs_gt_1)
+                log("Nodes: median {} maximum {} n_runs_exceeding {} runs_gt_1 {}",
+                    node_median, node_maximum, runs_excess, node_runs_gt_1)
 
 
 if __name__ == '__main__':
