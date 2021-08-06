@@ -10,8 +10,10 @@ from itertools import combinations
 # seeds 2185, 8448, 3274 are particularly bad for 5 node rf 2.
 
 N_PARTITIONS = 4096
-N_NODES = 18
-N_RACKS = 3
+N_NODES = 9
+#RACKS = [4, 4, 1]
+RACKS = [9]
+N_RACKS = len(RACKS)
 REPLICATION_FACTOR = 3
 N_RUNS = 500
 
@@ -46,7 +48,7 @@ class log(object):
         if OUTPUT:
             msg = fmt.format(*args, **kwargs)
 
-            print "{}{}".format(log.indentation, msg)
+            print("{}{}".format(log.indentation, msg))
 
     def __enter__(self):
         log.indent_level += 1
@@ -66,13 +68,13 @@ class log(object):
 
 
 def create_hash(partition, node):
-    return (hashlib.md5("{}{}".format(partition, node)).hexdigest(), node)
+    return (hashlib.md5("{}{}".format(partition, node).encode()).hexdigest(), node)
 
 
 def make_map(nodes):
     partition_map = []
 
-    for partition in xrange(0, N_PARTITIONS):
+    for partition in range(0, N_PARTITIONS):
         row = [create_hash(partition, n) for n in nodes]
         row = sorted(row, key=lambda hn: hn[0])
         row = [hn[1] for hn in row]
@@ -90,7 +92,7 @@ def describe_map(nodes, racks, pmap):
 
     replica_map = (r[:REPLICATION_FACTOR] for r in pmap)
     replicas_counts = [Counter() for _ in range(REPLICATION_FACTOR)]
-    expected = (N_PARTITIONS + len(nodes) - 1) / len(nodes)
+    expected = (N_PARTITIONS + len(nodes) - 1) // len(nodes)
 
     for replicas in replica_map:
         for r, node in enumerate(replicas):
@@ -128,8 +130,8 @@ def describe_map(nodes, racks, pmap):
 
     # Compute node excess.
     remainder = N_PARTITIONS % len(nodes)
-    extra_per_node = (remainder * REPLICATION_FACTOR + len(nodes) - 1) / len(nodes)
-    max_per_node = REPLICATION_FACTOR * (N_PARTITIONS / len(nodes)) + extra_per_node
+    extra_per_node = (remainder * REPLICATION_FACTOR + len(nodes) - 1) // len(nodes)
+    max_per_node = REPLICATION_FACTOR * (N_PARTITIONS // len(nodes)) + extra_per_node
     node_excess = [sv if sv > 0 else 0 for sv
                    in sorted(v - max_per_node
                              for v in nodes_counts.values())]
@@ -147,7 +149,7 @@ def describe_map(nodes, racks, pmap):
                 r, minimum, maximum, excess, n_exceeding)
 
         log("Node excess: minimum {} median {} maximum {}",
-            node_excess[0], node_excess[len(node_excess) / 2],
+            node_excess[0], node_excess[len(node_excess) // 2],
             node_excess[-1])
 
     return column_max_excess, node_excess[-1]
@@ -235,7 +237,7 @@ def describe_rack_aware_map(nodes, racks, pmap):
                     if len(n_counts) >= 3:
                         log("Column {}: total {} minimum {} median {} maximum {}",
                             r, rack_replica_counts[r][rack_id], n_counts[0],
-                            n_counts[len(n_counts) / 2], n_counts[-1])
+                            n_counts[len(n_counts) // 2], n_counts[-1])
                     elif len(n_counts) == 2:
                         log("Column {}: total {} minimum {} maximum {}",
                             r, rack_replica_counts[r][rack_id], n_counts[0],
@@ -276,22 +278,16 @@ def compare_maps(pmap1, pmap2):
 
 def simulate(balance_fn, do_drop=DO_DROP):
     random.seed(SEED)
+
     init_nodes = sorted(random.sample(NODE_NAMES, N_NODES))
-
-    min_rack_size = N_NODES / N_RACKS
-
     init_racks = {}
-    rack_id = 1
-    n_racked = 0
+    node_ix = 0
 
-    for node in init_nodes:
-        if n_racked < min_rack_size:
-            n_racked += 1
-        elif rack_id < N_RACKS:
-            rack_id += 1
-            n_racked = 1
+    for rack_id, count in enumerate(RACKS, 1):
+        for node in init_nodes[node_ix : node_ix + count]:
+            init_racks[node] = rack_id
 
-        init_racks[node] = rack_id
+        node_ix += count
 
     with log('Start'):
         init_map = balance_fn(init_nodes, init_racks, make_map(init_nodes))
@@ -365,7 +361,7 @@ def standard_balance(nodes, racks, pmap):
 
 def ashish_balance(nodes, racks, pmap):
     node_loads = [Counter() for _ in range(len(nodes))]
-    max_load_per_col = ((N_PARTITIONS + len(nodes) - 1) / len(nodes))
+    max_load_per_col = ((N_PARTITIONS + len(nodes) - 1) // len(nodes))
 
     for row in pmap:
         for col in range(len(nodes)):
@@ -405,7 +401,7 @@ def ashish_balance(nodes, racks, pmap):
 
 def naive_balance(nodes, racks, pmap, lowered=0):
     replica_counts = [Counter() for _ in range(REPLICATION_FACTOR)]
-    target_ptns = (N_PARTITIONS - lowered) / len(nodes)
+    target_ptns = (N_PARTITIONS - lowered) // len(nodes)
 
     for pid, row in enumerate(pmap):
         for r in range(REPLICATION_FACTOR):
@@ -429,14 +425,14 @@ def naive_balance(nodes, racks, pmap, lowered=0):
 
 def naive_balance_with_backtrack(nodes, racks, pmap, lowered=0):
     replica_counts = [Counter() for _ in range(REPLICATION_FACTOR)]
-    target_ptns = (N_PARTITIONS + (len(nodes) - 1)) / len(nodes)
+    target_ptns = (N_PARTITIONS + (len(nodes) - 1)) // len(nodes)
 
     if lowered != 0:
-        aggressive_target = (N_PARTITIONS - lowered) / len(nodes)
+        aggressive_target = (N_PARTITIONS - lowered) // len(nodes)
     else:
         aggressive_target = target_ptns
 
-    for pid in xrange(N_PARTITIONS):
+    for pid in range(N_PARTITIONS):
         row = pmap[pid]
 
         for r in range(REPLICATION_FACTOR):
@@ -498,7 +494,7 @@ def naive_balance_with_backtrack(nodes, racks, pmap, lowered=0):
     if n_swaps == 0:
         return pmap
 
-    for pid in xrange(N_PARTITIONS):
+    for pid in range(N_PARTITIONS):
         row = pmap[pid]
 
         for r in range(REPLICATION_FACTOR):
@@ -556,7 +552,7 @@ def two_pass_balance_v1(nodes, racks, pmap):
         for r in range(REPLICATION_FACTOR):
             replica_counts[r][row[r]] += 1
 
-    target_ptns = (N_PARTITIONS + (len(nodes) - 1)) / len(nodes)
+    target_ptns = (N_PARTITIONS + (len(nodes) - 1)) // len(nodes)
     remainder = N_PARTITIONS % len(nodes)
 
     if remainder == 0:
@@ -633,7 +629,7 @@ def two_pass_balance_v2(nodes, racks, pmap):
         for r in range(REPLICATION_FACTOR):
             replica_counts[r][row[r]] += 1
 
-    target_ptns = N_PARTITIONS / len(nodes)
+    target_ptns = N_PARTITIONS // len(nodes)
     replica_targets = [{n: target_ptns for n in nodes}
                        for _ in range(REPLICATION_FACTOR)]
 
@@ -721,9 +717,9 @@ def two_pass_balance_v2(nodes, racks, pmap):
 
 def naive_balance_enhanced_v1(nodes, racks, pmap, lowered=0):
     replicas_claims = [Counter() for _ in range(REPLICATION_FACTOR)]
-    smooth_balance_mark = (N_PARTITIONS - lowered) / len(nodes)
+    smooth_balance_mark = (N_PARTITIONS - lowered) // len(nodes)
 
-    min_claims = N_PARTITIONS / len(nodes)
+    min_claims = N_PARTITIONS // len(nodes)
     replicas_target_claims = [{n: min_claims for n in nodes}
                               for _ in range(REPLICATION_FACTOR)]
 
@@ -786,9 +782,9 @@ def naive_balance_enhanced_v1(nodes, racks, pmap, lowered=0):
 
 def naive_balance_enhanced_v2(nodes, racks, pmap, lowered=0):
     replicas_claims = [Counter() for _ in range(REPLICATION_FACTOR)]
-    smooth_balance_mark = (N_PARTITIONS - lowered) / len(nodes)
+    smooth_balance_mark = (N_PARTITIONS - lowered) // len(nodes)
 
-    min_claims = N_PARTITIONS / len(nodes)
+    min_claims = N_PARTITIONS // len(nodes)
     replicas_target_claims = [{n: min_claims for n in nodes}
                               for _ in range(REPLICATION_FACTOR)]
 
@@ -861,9 +857,9 @@ def rack_unique_before_r(racks, row, r, cur_rack):
 
 def rack_balance(nodes, racks, pmap, lowered=0):
     replicas_claims = [Counter() for _ in range(REPLICATION_FACTOR)]
-    smooth_balance_mark = (N_PARTITIONS - lowered) / len(nodes)
+    smooth_balance_mark = (N_PARTITIONS - lowered) // len(nodes)
 
-    min_claims = N_PARTITIONS / len(nodes)
+    min_claims = N_PARTITIONS // len(nodes)
     replicas_target_claims = [{n: min_claims for n in nodes}
                               for _ in range(REPLICATION_FACTOR)]
 
@@ -948,9 +944,9 @@ def rack_balance(nodes, racks, pmap, lowered=0):
 
 def simple_rack_balance(nodes, racks, pmap, lowered=0):
     replicas_claims = [Counter() for _ in range(REPLICATION_FACTOR)]
-    smooth_balance_mark = (N_PARTITIONS - lowered) / len(nodes)
+    smooth_balance_mark = (N_PARTITIONS - lowered) // len(nodes)
 
-    min_claims = N_PARTITIONS / len(nodes)
+    min_claims = N_PARTITIONS // len(nodes)
     replicas_target_claims = [{n: min_claims for n in nodes}
                               for _ in range(REPLICATION_FACTOR)]
 
@@ -1029,9 +1025,9 @@ def simple_rack_balance(nodes, racks, pmap, lowered=0):
 
 def rack_balance_order(nodes, racks, pmap, lowered=0):
     replicas_claims = [Counter() for _ in range(REPLICATION_FACTOR)]
-    smooth_balance_mark = (N_PARTITIONS - lowered) / len(nodes)
+    smooth_balance_mark = (N_PARTITIONS - lowered) // len(nodes)
 
-    min_claims = N_PARTITIONS / len(nodes)
+    min_claims = N_PARTITIONS // len(nodes)
     replicas_target_claims = [{n: min_claims for n in nodes}
                               for _ in range(REPLICATION_FACTOR)]
 
@@ -1147,9 +1143,9 @@ def rack_balance_order(nodes, racks, pmap, lowered=0):
 
 def rack_balance_orderish(nodes, racks, pmap, lowered=0):
     replicas_claims = [Counter() for _ in range(REPLICATION_FACTOR)]
-    smooth_balance_mark = (N_PARTITIONS - lowered) / len(nodes)
+    smooth_balance_mark = (N_PARTITIONS - lowered) // len(nodes)
 
-    min_claims = N_PARTITIONS / len(nodes)
+    min_claims = N_PARTITIONS // len(nodes)
     replicas_target_claims = [{n: min_claims for n in nodes}
                               for _ in range(REPLICATION_FACTOR)]
 
@@ -1272,9 +1268,9 @@ def rack_balance_orderish(nodes, racks, pmap, lowered=0):
 
 def rack_balance_andys_tie(nodes, racks, pmap, lowered=0):
     replicas_claims = [Counter() for _ in range(REPLICATION_FACTOR)]
-    smooth_balance_mark = (N_PARTITIONS - lowered) / len(nodes)
+    smooth_balance_mark = (N_PARTITIONS - lowered) // len(nodes)
 
-    min_claims = N_PARTITIONS / len(nodes)
+    min_claims = N_PARTITIONS // len(nodes)
     replicas_target_claims = [{n: min_claims for n in nodes}
                               for _ in range(REPLICATION_FACTOR)]
 
@@ -1385,7 +1381,7 @@ def rack_balance_andys_tie(nodes, racks, pmap, lowered=0):
 
 def naive_rack_balance(nodes, racks, pmap, lowered=0):
     replicas_claims = [Counter() for _ in range(REPLICATION_FACTOR)]
-    smooth_balance_mark = (N_PARTITIONS - lowered) / len(nodes)
+    smooth_balance_mark = (N_PARTITIONS - lowered) // len(nodes)
     n_racks = len(set(racks.values()))
 
     for pid, row in enumerate(pmap):
@@ -1493,6 +1489,8 @@ def main():
     if N_RUNS == 0:
         exit()
 
+    global do_run  # hack for ProcessPoolExecutor
+
     def do_run(seed):
         global SEED
 
@@ -1512,8 +1510,8 @@ def main():
         executor = ProcessPoolExecutor(max_workers=4)
         n_chunks = N_PROCS * N_CHUNKS_PER_PROC
         run_results = executor.map(
-            do_run, (random.randint(1000, 9999) for _ in xrange(N_RUNS)),
-            chunksize=N_RUNS / n_chunks)
+            do_run, (random.randint(1000, 9999) for _ in range(N_RUNS)),
+            chunksize=N_RUNS // n_chunks)
 
         OUTPUT = True
 
@@ -1527,15 +1525,15 @@ def main():
             column_peaks, node_peaks = zip(*results)
 
             column_peaks = sorted(column_peaks)
-            column_median = column_peaks[len(column_peaks) / 2]
+            column_median = column_peaks[len(column_peaks) // 2]
             column_maximum = column_peaks[-1]
-            column_runs_gt_1 = (sum(1 for p in column_peaks if p > 1) / float(len(column_peaks))) * 100
+            column_runs_gt_1 = (sum(1 for p in column_peaks if p > 1) / len(column_peaks)) * 100
 
             node_peaks = sorted(node_peaks)
-            node_median = node_peaks[len(node_peaks) / 2]
+            node_median = node_peaks[len(node_peaks) // 2]
             node_maximum = node_peaks[-1]
             runs_excess = sum(1 for p in node_peaks if p > 0)
-            node_runs_gt_1 = (sum(1 for p in node_peaks if p > 1) / float(len(node_peaks))) * 100
+            node_runs_gt_1 = (sum(1 for p in node_peaks if p > 1) / len(node_peaks)) * 100
 
             with log("{} excesses", name):
                 log("Columns: median {} maximum {} runs_gt_1 {}",
