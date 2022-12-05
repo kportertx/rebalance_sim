@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 import hashlib
@@ -12,9 +13,9 @@ from itertools import combinations
 N_PARTITIONS = 4096
 N_NODES = 9
 #RACKS = [4, 4, 1]
-RACKS = [9]
+RACKS = [3,3,3]
 N_RACKS = len(RACKS)
-REPLICATION_FACTOR = 3
+REPLICATION_FACTOR = 2
 N_RUNS = 500
 
 NODE_NAMES = [chr(65 + i) for i in range(26)]
