@@ -12,9 +12,9 @@ from itertools import combinations
 # seeds 2185, 8448, 3274 are particularly bad for 5 node rf 2.
 
 N_PARTITIONS = 4096
-RACKS = [10, 10, 10]
-REPLICATION_FACTOR = 3
-N_RUNS = 100
+RACKS = [63, 63]
+REPLICATION_FACTOR = 2
+N_RUNS = 500
 
 NODE_NAMES = [chr(65 + i) for i in range(26)]
 NODE_NAMES = [name for sublist in [[n + str(s) for n in NODE_NAMES]
@@ -103,8 +103,6 @@ def describe_map(nodes, racks, pmap):
         combos = combinations(nodes, REPLICATION_FACTOR)
         max_outage = 0
 
-    # This is expensive, disable for high n_node values (bearable at
-    # n_nodes = 64).
     for combo in combos:
         combo = set(combo)
         outage = 0
@@ -130,9 +128,7 @@ def describe_map(nodes, racks, pmap):
     remainder = N_PARTITIONS % len(nodes)
     extra_per_node = (remainder * REPLICATION_FACTOR + len(nodes) - 1) // len(nodes)
     max_per_node = REPLICATION_FACTOR * (N_PARTITIONS // len(nodes)) + extra_per_node
-    node_excess = [sv if sv > 0 else 0 for sv
-                   in sorted(v - max_per_node
-                             for v in nodes_counts.values())]
+    node_excess = [sv for sv in sorted(v - max_per_node for v in nodes_counts.values())]
 
     # Compute column excess.
     column_max_excess = 0
@@ -1056,7 +1052,7 @@ def main():
 
     balance_lowered = []
 
-    for i in [64, 128, 256, 512, 1024]:
+    for i in [1024]:
         # fn_name = "with_lowered_{}".format(i)
         # naive_balance_lowered.append(sim_partial(
         #     naive_balance, lowered=i, fn_name=fn_name))
@@ -1073,20 +1069,20 @@ def main():
         balance_lowered.append(sim_partial(rack_balance, lowered=i,
                                            fn_name=fn_name))
 
-        fn_name = "with_lowered_{}".format(i)
-        balance_lowered.append(sim_partial(simple_rack_balance, lowered=i,
-                                           fn_name=fn_name))
+        # fn_name = "with_lowered_{}".format(i)
+        # balance_lowered.append(sim_partial(simple_rack_balance, lowered=i,
+        #                                    fn_name=fn_name))
 
-        fn_name = "with_lowered_{}".format(i)
-        balance_lowered.append(sim_partial(rack_balance_order, lowered=i,
-                                           fn_name=fn_name))
+        # fn_name = "with_lowered_{}".format(i)
+        # balance_lowered.append(sim_partial(rack_balance_order, lowered=i,
+        #                                    fn_name=fn_name))
 
         # fn_name = "with_lowered_{}".format(i)  # FAIL
         # naive_balance_lowered.append(sim_partial(
         #     rack_balance_orderish, lowered=i, fn_name=fn_name))
 
     balance_fns = [
-        # then_rack_aware(standard_balance),
+        then_rack_aware(standard_balance),
     ]
 
     balance_fns.extend(balance_lowered)
@@ -1141,21 +1137,23 @@ def main():
             column_peaks, node_peaks = zip(*fn_results)
 
             column_peaks = sorted(column_peaks)
+            column_minimum = column_peaks[0]
             column_median = column_peaks[len(column_peaks) // 2]
             column_maximum = column_peaks[-1]
             column_runs_gt_1 = (sum(1 for p in column_peaks if p > 1) / len(column_peaks)) * 100
 
             node_peaks = sorted(node_peaks)
             node_median = node_peaks[len(node_peaks) // 2]
+            node_minimum = node_peaks[0]
             node_maximum = node_peaks[-1]
             runs_excess = sum(1 for p in node_peaks if p > 0)
             node_runs_gt_1 = (sum(1 for p in node_peaks if p > 1) / len(node_peaks)) * 100
 
             with log("{} excesses", name):
-                log("Columns: median {} maximum {} runs_gt_1 {:2.2f}%",
-                    column_median, column_maximum, column_runs_gt_1)
-                log("Nodes: median {} maximum {} n_runs_exceeding {} runs_gt_1 {:2.2f}%",
-                    node_median, node_maximum, runs_excess, node_runs_gt_1)
+                log("Columns: minimum {} median {} maximum {} runs_gt_1 {:2.2f}%",
+                    column_minimum, column_median, column_maximum, column_runs_gt_1)
+                log("Nodes: minimum {} median {} maximum {} n_runs_exceeding {} runs_gt_1 {:2.2f}%",
+                    node_minimum, node_median, node_maximum, runs_excess, node_runs_gt_1)
 
 
 if __name__ == '__main__':
