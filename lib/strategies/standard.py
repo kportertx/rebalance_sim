@@ -40,7 +40,7 @@ def then_rack_aware(balance_fn):
             next_r = n_needed
 
             for cur_r in range(1, n_needed):
-                if rackaware.rack_unique_before_r(racks, row, cur_r, racks[row[cur_r]]):
+                if rackaware.rack_unique_before_r(racks, row, cur_r, cur_r):
                     continue
 
                 swap_r = cur_r
@@ -48,7 +48,7 @@ def then_rack_aware(balance_fn):
                 for next_r in range(next_r, len(nodes)):
                     next_n = row[next_r]
 
-                    if rackaware.rack_unique_before_r(racks, row, cur_r, racks[next_n]):
+                    if rackaware.rack_unique_before_r(racks, row, cur_r, next_n):
                         swap_r = next_r
                         next_r += 1
                         break
@@ -88,11 +88,8 @@ def then_rack_aware2(balance_fn):
                 swap_r = cur_r
 
                 for next_r in range(cur_r, len(nodes)):
-                    next_n = row[next_r]
-
-                    if rackaware.rack_unique_before_r(racks, row, cur_r, racks[next_n]):
+                    if rackaware.rack_unique_before_r(racks, row, cur_r, next_r):
                         swap_r = next_r
-                        next_r += 1
                         break
 
                 if cur_r != swap_r:

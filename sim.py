@@ -10,6 +10,13 @@ from itertools import combinations
 from lib import config
 from lib.log import log
 from lib.strategies.standard import standard_balance, then_rack_aware, then_rack_aware2
+from lib.strategies.uniform import (
+    multipass,
+    rack_balance,
+    rack_balance2,
+    rack_balance2_1,
+    rack_balance3,
+)
 
 
 def sim_partial(*args, **kwargs):
@@ -23,11 +30,11 @@ def sim_partial(*args, **kwargs):
     return fn
 
 
-def describe_map(nodes, racks, pmap):
+def describe_pmap(nodes, racks, pmap):
     n_racks = len(set(racks.values()))
 
     if n_racks > 1:
-        return describe_rack_aware_map(nodes, racks, pmap)
+        return describe_rack_aware_pmap(nodes, racks, pmap)
 
     replica_map = (r[: config.REPLICATION_FACTOR] for r in pmap)
     replicas_counts = [Counter() for _ in range(config.REPLICATION_FACTOR)]
@@ -118,7 +125,7 @@ def describe_map(nodes, racks, pmap):
     return column_max_excess, node_excess[-1]
 
 
-def describe_rack_aware_map(nodes, racks, pmap):
+def describe_rack_aware_pmap(nodes, racks, pmap):
     replica_map = (r[: config.REPLICATION_FACTOR] for r in pmap)
     replicas_counts = [Counter() for _ in range(config.REPLICATION_FACTOR)]
     node_counts = Counter()
@@ -293,7 +300,7 @@ def simulate(balance_fn, do_drop):
     with log("Start"):
         init_map = balance_fn(init_nodes, init_racks)
 
-        column_max_excess, node_max_excess = describe_map(
+        column_max_excess, node_max_excess = describe_pmap(
             init_nodes, init_racks, init_map
         )
 
@@ -302,7 +309,7 @@ def simulate(balance_fn, do_drop):
             remove_node = init_nodes[1:]
             remove_node_map = balance_fn(remove_node, init_racks)
 
-            describe_map(remove_node, init_racks, remove_node_map)
+            describe_pmap(remove_node, init_racks, remove_node_map)
             compare_maps(init_map, remove_node_map, init_racks)
 
     return column_max_excess, node_max_excess
@@ -314,18 +321,6 @@ def main():
     for i in [1024]:
         pass
         # fn_name = "with_lowered_{}".format(i)
-        # naive_balance_lowered.append(sim_partial(
-        #     naive_balance, lowered=i, fn_name=fn_name))
-
-        # fn_name = "with_lowered_{}".format(i)
-        # naive_balance_lowered.append(sim_partial(
-        #     naive_balance_enhanced_v1, lowered=i, fn_name=fn_name))
-
-        # fn_name = "with_lowered_{}".format(i)
-        # naive_balance_lowered.append(then_rack_aware(sim_partial(
-        #     naive_balance_enhanced_v2, lowered=i, fn_name=fn_name)))
-
-        # fn_name = "with_lowered_{}".format(i)
         # balance_lowered.append(sim_partial(rack_balance, lowered=i,
         #                                    fn_name=fn_name))
 
@@ -333,19 +328,14 @@ def main():
         # balance_lowered.append(sim_partial(simple_rack_balance, lowered=i,
         #                                    fn_name=fn_name))
 
-        # fn_name = "with_lowered_{}".format(i)
-        # balance_lowered.append(sim_partial(rack_balance_order, lowered=i,
-        #                                    fn_name=fn_name))
-
-        # fn_name = "with_lowered_{}".format(i)  # FAIL
-        # naive_balance_lowered.append(sim_partial(
-        #     rack_balance_orderish, lowered=i, fn_name=fn_name))
-
     balance_fns = [
-        then_rack_aware(standard_balance),
+        # then_rack_aware(standard_balance),
         then_rack_aware2(standard_balance),
         # multipass,
-        # stable_rack_aware_positions,
+        sim_partial(rack_balance, lowered=1024),
+        sim_partial(rack_balance2, lowered=128),
+        # sim_partial(rack_balance2_1, lowered=128),
+        # sim_partial(rack_balance3, lowered=128),
     ]
 
     balance_fns.extend(balance_lowered)
@@ -416,16 +406,16 @@ def main():
             column_minimum = column_peaks[0]
             column_median = column_peaks[len(column_peaks) // 2]
             column_maximum = column_peaks[-1]
-            column_runs_gt_1 = (
+            column_pct_runs_gt_1 = (
                 sum(1 for p in column_peaks if p > 1) / len(column_peaks)
             ) * 100
 
             node_peaks = sorted(node_peaks)
-            node_median = node_peaks[len(node_peaks) // 2]
             node_minimum = node_peaks[0]
+            node_median = node_peaks[len(node_peaks) // 2]
             node_maximum = node_peaks[-1]
             runs_excess = sum(1 for p in node_peaks if p > 0)
-            node_runs_gt_1 = (
+            node_pct_runs_gt_1 = (
                 sum(1 for p in node_peaks if p > 1) / len(node_peaks)
             ) * 100
 
@@ -436,7 +426,7 @@ def main():
                             f"Columns: minimum {column_minimum}",
                             f"median {column_median}",
                             f"maximum {column_maximum}",
-                            f"runs_gt_1 {column_runs_gt_1:2.2f}%",
+                            f"runs_gt_1 {column_pct_runs_gt_1:2.2f}%",
                         ]
                     )
                 )
@@ -447,7 +437,7 @@ def main():
                             f"median {node_median}",
                             f"maximum {node_maximum}",
                             f"n_runs_exceeding {runs_excess}",
-                            f"runs_gt_1 {node_runs_gt_1:2.2f}%",
+                            f"runs_gt_1 {node_pct_runs_gt_1:2.2f}%",
                         ]
                     )
                 )
