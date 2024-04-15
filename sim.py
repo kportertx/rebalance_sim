@@ -62,13 +62,14 @@ def describe_pmap(nodes, racks, pmap):
         if outage > max_outage:
             max_outage = outage
 
-    stats = [sorted(counts.values()) for counts in replicas_counts]
+    stats = ((min(vals), max(vals), sum(1 for v in vals if v > expected))
+             in (list(counts.values()) for counts in replicas_counts))
     stats = [
         (
             values[0],
-            values[-1],
-            values[-1] - expected,
-            sum(1 for v in values if v > expected),
+            values[1],
+            values[1] - expected,
+            values[2]
         )
         for values in stats
     ]
@@ -196,56 +197,61 @@ def describe_rack_aware_pmap(nodes, racks, pmap):
                     ]
                 )
             ):
-                for r in range(config.REPLICATION_FACTOR):
-                    n_counts = []
 
-                    for n in rack_nodes[rack_id]:
-                        n_counts.append(replicas_counts[r][n])
+                for r in range(config.REPLICATION_FACTOR):
+                    n_counts = sorted(
+                        replicas_counts[r][n] for n in rack_nodes[rack_id])
 
                     if is_min_rack:
                         column_spreads.append(n_counts[-1] - n_counts[0])
 
-                        for n in rack_nodes[rack_id]:
-                            node_spread_values[n] += replicas_counts[r][n]
+                    for n in rack_nodes[rack_id]:
+                        node_spread_values[n] += replicas_counts[r][n]
 
-                    if len(n_counts) >= 3:
-                        log(
-                            " ".join(
-                                [
-                                    f"Column {r}:",
-                                    f"total {rack_replica_counts[r][rack_id]}",
-                                    f"minimum {n_counts[0]}",
-                                    f"median {n_counts[len(n_counts) // 2]}",
-                                    f"maximum {n_counts[-1]}",
-                                ]
-                            )
-                        )
-                    elif len(n_counts) == 2:
-                        log(
-                            " ".join(
-                                [
-                                    f"Column {r}:",
-                                    f"total {rack_replica_counts[r][rack_id]}",
-                                    f"minimum {n_counts[0]} maximum {n_counts[-1]}",
-                                ]
-                            )
-                        )
-                    else:
-                        log(
-                            " ".join(
-                                [
-                                    f"Column {r}:",
-                                    f"total {rack_replica_counts[r][rack_id]}",
-                                ]
-                            )
-                        )
+                    column = f"Column{r}:"
+                    total = f"total {rack_replica_counts[r][rack_id]}"
+                    minimum = None
+                    median = None
+                    maximum = None
+
+                    n_n_counts = len(n_counts)
+
+                    if n_n_counts >= 2:
+                        minimum = f"minimum {n_counts[0]}"
+                        maximum = f"maximum {n_counts[-1]}"
+
+                        if n_n_counts >= 3:
+                            median = f"median {n_counts[n_n_counts // 2]}"
+
+                    log(" ".join(
+                        s for s in (column, total, minimum, median, maximum)
+                        if s is not None))
+
+                node_spread_values = list(node_spread_values.values())
+                maximum = max(node_spread_values)
+                minimum = min(node_spread_values)
 
                 if is_min_rack:
-                    node_spread_values = sorted(node_spread_values.values())
-                    node_spreads.append(node_spread_values[-1] - node_spread_values[0])
+                    node_spreads.append(maximum - minimum)
 
-    column_spread = sorted(column_spreads)[-1]
-    node_spread = sorted(node_spreads)[-1]
+                node = "Node:"
+                total = f"total {sum(node_spread_values)}"
+                minimum = f"minimum {minimum}"
+                median = None
+                maximum = f"maximum {maximum}"
+
+                n_values = len(node_spread_values)
+
+                if n_values >= 3:
+                    median = f"median {node_spread_values[n_values // 2]}"
+
+                log(" ".join(
+                    s for s in (node, total, minimum, median, maximum)
+                    if s is not None))
+
+
+    column_spread = max(column_spreads)
+    node_spread = max(node_spreads)
 
     return column_spread, node_spread
 
@@ -319,23 +325,16 @@ def main():
     balance_lowered = []
 
     for i in [1024]:
-        pass
-        # fn_name = "with_lowered_{}".format(i)
-        # balance_lowered.append(sim_partial(rack_balance, lowered=i,
-        #                                    fn_name=fn_name))
+        balance_lowered.append(
+            sim_partial(rack_balance, lowered=i, fn_name=f"with_lowered_{i}"))
 
-        # fn_name = "with_lowered_{}".format(i)
-        # balance_lowered.append(sim_partial(simple_rack_balance, lowered=i,
-        #                                    fn_name=fn_name))
+        # balance_lowered.append(
+        #     sim_partial(rack_balance2, lowered=i, fn_name=f"with_lowered_{i}"))
 
     balance_fns = [
         # then_rack_aware(standard_balance),
         then_rack_aware2(standard_balance),
-        # multipass,
-        sim_partial(rack_balance, lowered=1024),
-        sim_partial(rack_balance2, lowered=128),
-        # sim_partial(rack_balance2_1, lowered=128),
-        # sim_partial(rack_balance3, lowered=128),
+        multipass,
     ]
 
     balance_fns.extend(balance_lowered)
