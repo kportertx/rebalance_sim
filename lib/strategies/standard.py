@@ -122,7 +122,7 @@ def stable_rack_aware_positions(nodes, racks):
     rack_pmap = standard_balance(rack_ids)
     n_nodes = len(nodes)
 
-    for pid, (rack_row, node_row) in enumerate(zip(rack_pmap, pmap)):
+    for (rack_row, node_row) in zip(rack_pmap, pmap):
         for r in range(min(n_racks, config.REPLICATION_FACTOR)):
             target_rack = rack_row[r]
 

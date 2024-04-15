@@ -9,14 +9,10 @@ from itertools import combinations
 
 from lib import config
 from lib.log import log
-from lib.strategies.standard import standard_balance, then_rack_aware, then_rack_aware2
-from lib.strategies.uniform import (
-    multipass,
-    rack_balance,
-    rack_balance2,
-    rack_balance2_1,
-    rack_balance3,
-)
+from lib.strategies.standard import (standard_balance, then_rack_aware,
+                                     then_rack_aware2)
+from lib.strategies.uniform import (multipass, rack_balance, rack_balance2,
+                                    rack_balance2_1, rack_balance3)
 
 
 def sim_partial(*args, **kwargs):
@@ -62,16 +58,12 @@ def describe_pmap(nodes, racks, pmap):
         if outage > max_outage:
             max_outage = outage
 
-    stats = ((min(vals), max(vals), sum(1 for v in vals if v > expected))
-             in (list(counts.values()) for counts in replicas_counts))
+    stats = (
+        (min(vals), max(vals), sum(1 for v in vals if v > expected))
+        for vals in (list(counts.values()) for counts in replicas_counts)
+    )
     stats = [
-        (
-            values[0],
-            values[1],
-            values[1] - expected,
-            values[2]
-        )
-        for values in stats
+        (values[0], values[1], values[1] - expected, values[2]) for values in stats
     ]
 
     nodes_counts = Counter()
@@ -157,7 +149,7 @@ def describe_rack_aware_pmap(nodes, racks, pmap):
             return 0, 0
 
         rack_ids = sorted(set(racks.values()))
-        rack_replica_counts = [Counter() for r in range(config.REPLICATION_FACTOR)]
+        rack_replica_counts = [Counter() for _ in range(config.REPLICATION_FACTOR)]
         rack_counts = Counter()
         rack_n_nodes = Counter()
 
@@ -200,7 +192,8 @@ def describe_rack_aware_pmap(nodes, racks, pmap):
 
                 for r in range(config.REPLICATION_FACTOR):
                     n_counts = sorted(
-                        replicas_counts[r][n] for n in rack_nodes[rack_id])
+                        replicas_counts[r][n] for n in rack_nodes[rack_id]
+                    )
 
                     if is_min_rack:
                         column_spreads.append(n_counts[-1] - n_counts[0])
@@ -223,9 +216,13 @@ def describe_rack_aware_pmap(nodes, racks, pmap):
                         if n_n_counts >= 3:
                             median = f"median {n_counts[n_n_counts // 2]}"
 
-                    log(" ".join(
-                        s for s in (column, total, minimum, median, maximum)
-                        if s is not None))
+                    log(
+                        " ".join(
+                            s
+                            for s in (column, total, minimum, median, maximum)
+                            if s is not None
+                        )
+                    )
 
                 node_spread_values = list(node_spread_values.values())
                 maximum = max(node_spread_values)
@@ -245,10 +242,13 @@ def describe_rack_aware_pmap(nodes, racks, pmap):
                 if n_values >= 3:
                     median = f"median {node_spread_values[n_values // 2]}"
 
-                log(" ".join(
-                    s for s in (node, total, minimum, median, maximum)
-                    if s is not None))
-
+                log(
+                    " ".join(
+                        s
+                        for s in (node, total, minimum, median, maximum)
+                        if s is not None
+                    )
+                )
 
     column_spread = max(column_spreads)
     node_spread = max(node_spreads)
@@ -256,7 +256,7 @@ def describe_rack_aware_pmap(nodes, racks, pmap):
     return column_spread, node_spread
 
 
-def compare_maps(pmap1, pmap2, racks):
+def compare_maps(pmap1, pmap2):
     n_nodes_affected = abs(len(pmap1[0]) - len(pmap2[0]))
 
     n_changed = 0
@@ -266,7 +266,7 @@ def compare_maps(pmap1, pmap2, racks):
     replica_map1 = [r[: config.REPLICATION_FACTOR] for r in pmap1]
     replica_map2 = [r[: config.REPLICATION_FACTOR] for r in pmap2]
 
-    for pid, (replicas1, replicas2) in enumerate(zip(replica_map1, replica_map2)):
+    for replicas1, replicas2 in zip(replica_map1, replica_map2):
         intersect = set(replicas1) & set(replicas2)
 
         if len(intersect) < len(replicas1):
@@ -316,7 +316,7 @@ def simulate(balance_fn, do_drop):
             remove_node_map = balance_fn(remove_node, init_racks)
 
             describe_pmap(remove_node, init_racks, remove_node_map)
-            compare_maps(init_map, remove_node_map, init_racks)
+            compare_maps(init_map, remove_node_map)
 
     return column_max_excess, node_max_excess
 
@@ -326,7 +326,8 @@ def main():
 
     for i in [1024]:
         balance_lowered.append(
-            sim_partial(rack_balance, lowered=i, fn_name=f"with_lowered_{i}"))
+            sim_partial(rack_balance, lowered=i, fn_name=f"with_lowered_{i}")
+        )
 
         # balance_lowered.append(
         #     sim_partial(rack_balance2, lowered=i, fn_name=f"with_lowered_{i}"))

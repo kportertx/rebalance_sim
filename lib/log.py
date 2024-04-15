@@ -15,7 +15,7 @@ class log(object):
         log.indent_level += 1
         self._update_indentation()
 
-    def __exit__(self, *args):
+    def __exit__(self, *_):
         log.indent_level -= 1
         self._update_indentation()
 
