@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import math
 import random
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
@@ -9,10 +10,14 @@ from itertools import combinations
 
 from lib import config
 from lib.log import log
-from lib.strategies.standard import (standard_balance, then_rack_aware,
-                                     then_rack_aware2)
-from lib.strategies.uniform import (multipass, rack_balance, rack_balance2,
-                                    rack_balance2_1, rack_balance3)
+from lib.strategies.standard import standard_balance, then_rack_aware, then_rack_aware2
+from lib.strategies.uniform import (
+    multipass,
+    rack_balance,
+    rack_balance2,
+    rack_balance2_1,
+    rack_balance3,
+)
 
 
 def sim_partial(*args, **kwargs):
@@ -79,7 +84,7 @@ def describe_pmap(nodes, racks, pmap):
     max_per_node = (
         config.REPLICATION_FACTOR * (config.N_PARTITIONS // len(nodes)) + extra_per_node
     )
-    node_excess = [sv for sv in sorted(v - max_per_node for v in nodes_counts.values())]
+    node_excess = sorted(v - max_per_node for v in nodes_counts.values())
 
     # Compute column excess.
     column_max_excess = 0
@@ -263,6 +268,8 @@ def compare_maps(pmap1, pmap2):
     n_large_changes = 0
     all_changed = 0
 
+    ptns_changed = 0
+
     replica_map1 = [r[: config.REPLICATION_FACTOR] for r in pmap1]
     replica_map2 = [r[: config.REPLICATION_FACTOR] for r in pmap2]
 
@@ -271,6 +278,7 @@ def compare_maps(pmap1, pmap2):
 
         if len(intersect) < len(replicas1):
             n_changed += len(replicas1) - len(intersect)
+            ptns_changed += 1
 
         if len(replicas1) - len(intersect) > n_nodes_affected:
             n_large_changes += 1
@@ -279,33 +287,47 @@ def compare_maps(pmap1, pmap2):
             all_changed += 1
 
     log(
-        ", ".join(
+        "replicas - "
+        + ", ".join(
             [
-                f"all-replicas-changed: {all_changed}",
-                f"n-large-changes({n_nodes_affected + 1}): {n_large_changes}",
-                f"total-changes: {n_changed}",
+                f"changed: {n_changed}",
+                f"large-changes(sz={n_nodes_affected + 1}): {n_large_changes}",
+                f"all-changed: {all_changed}",
             ]
-        )
+        ),
     )
+    log("partitions - " + ", ".join([f"changed: {ptns_changed}"]))
+
+
+def make_node_names():
+    hex_char = lambda: chr(ord("A") + random.randrange(6))
+    hex_num = lambda: chr(ord("0") + random.randrange(10))
+    n_chars = math.ceil(math.log(len(config.RACKS), 6))
+    max_rack_sz = max(r for r in config.RACKS)
+    n_nums = math.ceil(math.log(max_rack_sz, 10))
+
+    nodes = []
+    racks = {}
+
+    for rack_sz in config.RACKS:
+        rack_name = "".join(hex_char() for _ in range(n_chars))
+
+        for _ in range(rack_sz):
+            node_name = "".join(hex_num() for _ in range(n_nums))
+            node_name = f"{rack_name}{node_name}"
+            nodes.append(node_name)
+            racks[node_name] = rack_name
+
+    return tuple(sorted(nodes, reverse=True)), racks
 
 
 def simulate(balance_fn, do_drop):
     random.seed(config.SEED)
 
-    n_nodes = sum(config.RACKS)
-    init_nodes = tuple(sorted(random.sample(config.NODE_NAMES, n_nodes)))
-    init_racks = {}
-    node_ix = 0
-
-    for rack_id, count in enumerate(config.RACKS, 1):
-        for node in init_nodes[node_ix : node_ix + count]:
-            init_racks[node] = rack_id
-
-        node_ix += count
+    init_nodes, init_racks = make_node_names()
 
     with log("Start"):
         init_map = balance_fn(init_nodes, init_racks)
-
         column_max_excess, node_max_excess = describe_pmap(
             init_nodes, init_racks, init_map
         )
@@ -385,7 +407,7 @@ def main():
         executor = ProcessPoolExecutor(max_workers=config.N_PROCS)
         run_results = executor.map(
             do_run,
-            (random.randint(1000, 9999) for _ in range(config.N_RUNS)),
+            (random.randint(0, 2**64 - 1) for _ in range(config.N_RUNS)),
             chunksize=config.N_RUNS // config.N_PROCS,
         )
 
