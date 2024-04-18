@@ -309,14 +309,27 @@ def make_node_names():
     nodes = []
     racks = {}
 
+    racks_set = set()
+    nodes_set = set()
+
     for rack_sz in config.RACKS:
-        rack_name = "".join(hex_char() for _ in range(n_chars))
+        while True:
+            rack_name = "".join(hex_char() for _ in range(n_chars))
+
+            if rack_name not in racks_set:
+                racks_set.add(rack_name)
+                break
 
         for _ in range(rack_sz):
-            node_name = "".join(hex_num() for _ in range(n_nums))
-            node_name = f"{rack_name}{node_name}"
-            nodes.append(node_name)
-            racks[node_name] = rack_name
+            while True:
+                node_name = "".join(hex_num() for _ in range(n_nums))
+                node_name = f"{rack_name}{node_name}"
+
+                if node_name not in nodes_set:
+                    nodes_set.add(node_name)
+                    nodes.append(node_name)
+                    racks[node_name] = rack_name
+                    break
 
     return tuple(sorted(nodes, reverse=True)), racks
 
